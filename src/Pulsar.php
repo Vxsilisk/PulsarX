@@ -19,11 +19,12 @@ class Pulsar extends Helper
         CURLOPT_HEADER         => false,
         CURLINFO_HEADER_OUT    => true,
         CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS      => 20,
         CURLOPT_AUTOREFERER    => true,
         CURLOPT_CONNECTTIMEOUT => 30,
         CURLOPT_TIMEOUT        => 60,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => false
+        CURLOPT_SSL_VERIFYPEER => true,   // secure by default — disable with new Pulsar(verify: false)
+        CURLOPT_SSL_VERIFYHOST => 2,
     ];
 
     private CurlHandle $ch;
@@ -32,12 +33,20 @@ class Pulsar extends Helper
     private array|false $info;
 
     private CookieJarInterface $cookieJar;
-    private string $userAgent = 'PulsarX/1.0 (+https://github.com/Vxsilisk/PulsarX) requests-style cURL client';
+    private string $userAgent = 'PulsarX/1.1 (+https://github.com/Vxsilisk/PulsarX) requests-style cURL client';
     private ?Profile $profile = null;
 
     /** @var string[] rotation pool; non-empty enables per-request rotation */
     private array $rotatePool = [];
     private bool $stealth = false;
+
+    // Retry policy
+    private int $retryTimes = 0;
+    private float $retryDelay = 0.5;
+    /** @var int[] HTTP status codes that trigger a retry */
+    private array $retryOn = [429, 500, 502, 503, 504];
+
+    private bool $throwOnError = false;
 
     private int $error_code = 0;
     private string $error_string = '';
@@ -46,10 +55,53 @@ class Pulsar extends Helper
     private string $currentUrl = '';
     private string $lastUrl = '';
 
-    public function __construct(array $config = [])
+    public function __construct(array $config = [], bool $verify = true)
     {
-        $this->default   = array_replace($this->default, $config);
+        $this->default = array_replace($this->default, $config);
+
+        if (!$verify) {
+            $this->default[CURLOPT_SSL_VERIFYPEER] = false;
+            $this->default[CURLOPT_SSL_VERIFYHOST] = false;
+        }
+
         $this->cookieJar = new CookieJar();
+    }
+
+    /* ----------------------------------------------------------------------
+     * Request policy (chainable, session-wide)
+     * -------------------------------------------------------------------- */
+
+    /**
+     * Retry failed requests with exponential backoff + jitter. Retries on transport
+     * errors and on the given HTTP status codes.
+     *
+     * @param int        $times     max retries (0 disables)
+     * @param float      $baseDelay seconds; each attempt waits baseDelay * 2^n (± jitter)
+     * @param int[]|null $on        HTTP statuses to retry (default 429/500/502/503/504)
+     */
+    public function retries(int $times = 3, float $baseDelay = 0.5, ?array $on = null): static
+    {
+        $this->retryTimes = max(0, $times);
+        $this->retryDelay = max(0.0, $baseDelay);
+        if ($on !== null) {
+            $this->retryOn = $on;
+        }
+        return $this;
+    }
+
+    /** Control redirect following for the session. */
+    public function redirects(bool $follow = true, int $max = 20): static
+    {
+        $this->default[CURLOPT_FOLLOWLOCATION] = $follow;
+        $this->default[CURLOPT_MAXREDIRS] = $max;
+        return $this;
+    }
+
+    /** Throw a PulsarException on transport failure or any 4xx/5xx (sync requests only). */
+    public function throwOnError(bool $on = true): static
+    {
+        $this->throwOnError = $on;
+        return $this;
     }
 
     /* ----------------------------------------------------------------------
@@ -157,6 +209,43 @@ class Pulsar extends Helper
         };
     }
 
+    /** Append a query string built from $params, preserving any existing query. */
+    private function applyParams(string $url, ?array $params): string
+    {
+        if (empty($params)) {
+            return $url;
+        }
+
+        $query = http_build_query($params);
+        if ($query === '') {
+            return $url;
+        }
+
+        return $url . (str_contains($url, '?') ? '&' : '?') . $query;
+    }
+
+    /** Should this response be retried? (transport error or a retryable status, attempts left) */
+    private function shouldRetry(Response $response, int $attempt): bool
+    {
+        if ($attempt >= $this->retryTimes) {
+            return false;
+        }
+
+        return !$response->isSuccess() || in_array($response->getStatusCode(), $this->retryOn, true);
+    }
+
+    /** Exponential backoff with ±25% jitter, in microseconds-sleep. */
+    private function backoff(int $attempt): void
+    {
+        $delay = $this->retryDelay * (2 ** $attempt);
+        $jitter = $delay * 0.25 * (mt_rand(-1000, 1000) / 1000);
+        $seconds = max(0.0, $delay + $jitter);
+
+        if ($seconds > 0) {
+            usleep((int)($seconds * 1_000_000));
+        }
+    }
+
     /**
      * Resolve a request body into cURL POSTFIELDS plus any forced headers.
      *
@@ -222,14 +311,21 @@ class Pulsar extends Helper
         mixed $json,
         ?array $headers,
         string|CookieJarInterface|null $cookie,
-        ?array $server
+        ?array $server,
+        ?array $params = null,
+        ?int $timeout = null
     ): array {
         if ($cookie !== null) {
             $this->setCookie($cookie);
         }
 
+        $url = $this->applyParams($url, $params);
         $ch  = curl_init($url);
         $opt = $this->default;
+
+        if ($timeout !== null) {
+            $opt[CURLOPT_TIMEOUT] = $timeout;
+        }
 
         // Body: JSON param, Mime multipart, raw array (-> JSON) or string
         [$postfields, $extraHeaders] = $this->resolveBody($data, $json);
@@ -453,54 +549,72 @@ class Pulsar extends Helper
      * Synchronous API
      * -------------------------------------------------------------------- */
 
-    public function get(string $url, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null): Response
+    public function get(string $url, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, ?array $params = null, ?int $timeout = null): Response
     {
-        return $this->dispatch('GET', $url, null, null, $headers, $cookie, $server);
+        return $this->dispatch('GET', $url, null, null, $headers, $cookie, $server, $params, $timeout);
     }
 
-    public function post(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null): Response
+    public function post(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, ?array $params = null, ?int $timeout = null): Response
     {
-        return $this->dispatch('POST', $url, $data, $json, $headers, $cookie, $server);
+        return $this->dispatch('POST', $url, $data, $json, $headers, $cookie, $server, $params, $timeout);
     }
 
-    public function put(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null): Response
+    public function put(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, ?array $params = null, ?int $timeout = null): Response
     {
-        return $this->dispatch('PUT', $url, $data, $json, $headers, $cookie, $server);
+        return $this->dispatch('PUT', $url, $data, $json, $headers, $cookie, $server, $params, $timeout);
     }
 
-    public function patch(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null): Response
+    public function patch(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, ?array $params = null, ?int $timeout = null): Response
     {
-        return $this->dispatch('PATCH', $url, $data, $json, $headers, $cookie, $server);
+        return $this->dispatch('PATCH', $url, $data, $json, $headers, $cookie, $server, $params, $timeout);
     }
 
-    public function delete(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null): Response
+    public function delete(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, ?array $params = null, ?int $timeout = null): Response
     {
-        return $this->dispatch('DELETE', $url, $data, $json, $headers, $cookie, $server);
+        return $this->dispatch('DELETE', $url, $data, $json, $headers, $cookie, $server, $params, $timeout);
     }
 
-    public function custom(string $url, string $method = 'GET', string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null): Response
+    public function custom(string $url, string $method = 'GET', string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, ?array $params = null, ?int $timeout = null): Response
     {
-        return $this->dispatch($method, $url, $data, $json, $headers, $cookie, $server);
+        return $this->dispatch($method, $url, $data, $json, $headers, $cookie, $server, $params, $timeout);
     }
 
-    private function dispatch(string $method, string $url, string|array|Mime|null $data, mixed $json, ?array $headers, string|CookieJarInterface|null $cookie, ?array $server): Response
+    private function dispatch(string $method, string $url, string|array|Mime|null $data, mixed $json, ?array $headers, string|CookieJarInterface|null $cookie, ?array $server, ?array $params = null, ?int $timeout = null): Response
     {
-        $this->currentUrl = $url;
-        [$ch, $buffer] = $this->makeHandle($method, $url, $data, $json, $headers, $cookie, $server);
-        $this->ch = $ch;
-        $this->callback = $buffer;
+        $this->currentUrl = $this->applyParams($url, $params);
 
-        $body = curl_exec($ch);
-        $info = curl_getinfo($ch);
+        $attempt = 0;
+        while (true) {
+            [$ch, $buffer] = $this->makeHandle($method, $url, $data, $json, $headers, $cookie, $server, $params, $timeout);
+            $this->ch = $ch;
+            $this->callback = $buffer;
 
-        $this->body         = $body;
-        $this->info         = $info;
-        $this->error_code   = curl_errno($ch);
-        $this->error_string = curl_error($ch);
+            $body = curl_exec($ch);
+            $info = curl_getinfo($ch);
 
-        $response = $this->buildResponse($ch, $buffer, $body, $info);
+            $this->body         = $body;
+            $this->info         = $info;
+            $this->error_code   = curl_errno($ch);
+            $this->error_string = curl_error($ch);
 
-        unset($ch);
+            $response = $this->buildResponse($ch, $buffer, $body, $info);
+            unset($ch);
+
+            if (!$this->shouldRetry($response, $attempt)) {
+                break;
+            }
+
+            $this->backoff($attempt);
+            $attempt++;
+        }
+
+        if ($this->throwOnError && !$response->ok()) {
+            throw new PulsarException(
+                "Request to {$this->currentUrl} failed with status {$response->getStatusCode()}"
+                . ($response->getReason() ? ": {$response->getReason()}" : '')
+            );
+        }
+
         return $response;
     }
 
@@ -521,7 +635,8 @@ class Pulsar extends Helper
             'response' => $buffer->rawResponseHeaders,
         ];
 
-        $elapsed = (float)($info['total_time'] ?? 0.0);
+        $elapsed   = (float)($info['total_time'] ?? 0.0);
+        $redirects = (int)($info['redirect_count'] ?? 0);
 
         // A transport error is curl returning false — NOT an empty body (e.g. 204).
         if ($body === false) {
@@ -534,6 +649,8 @@ class Pulsar extends Helper
                 body: 'Error code: ' . $errno . ' / Message: ' . $error,
                 reason: $error,
                 elapsed: $elapsed,
+                url: $url,
+                redirects: $redirects,
             );
         }
 
@@ -543,6 +660,8 @@ class Pulsar extends Helper
             headers: $headers,
             body: $body,
             elapsed: $elapsed,
+            url: $url,
+            redirects: $redirects,
         );
     }
 
@@ -550,25 +669,25 @@ class Pulsar extends Helper
      * Asynchronous API (curl_multi)
      * -------------------------------------------------------------------- */
 
-    public function getAsync(string $url, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, string|int|null $key = null): Promise
+    public function getAsync(string $url, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, ?array $params = null, string|int|null $key = null): Promise
     {
-        return $this->defer('GET', $url, null, null, $headers, $cookie, $server, $key);
+        return $this->defer('GET', $url, null, null, $headers, $cookie, $server, $params, $key);
     }
 
-    public function postAsync(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, string|int|null $key = null): Promise
+    public function postAsync(string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, ?array $params = null, string|int|null $key = null): Promise
     {
-        return $this->defer('POST', $url, $data, $json, $headers, $cookie, $server, $key);
+        return $this->defer('POST', $url, $data, $json, $headers, $cookie, $server, $params, $key);
     }
 
-    public function requestAsync(string $method, string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, string|int|null $key = null): Promise
+    public function requestAsync(string $method, string $url, string|array|Mime|null $data = null, ?array $headers = null, string|CookieJarInterface|null $cookie = null, ?array $server = null, mixed $json = null, ?array $params = null, string|int|null $key = null): Promise
     {
-        return $this->defer($method, $url, $data, $json, $headers, $cookie, $server, $key);
+        return $this->defer($method, $url, $data, $json, $headers, $cookie, $server, $params, $key);
     }
 
-    private function defer(string $method, string $url, string|array|Mime|null $data, mixed $json, ?array $headers, string|CookieJarInterface|null $cookie, ?array $server, string|int|null $key): Promise
+    private function defer(string $method, string $url, string|array|Mime|null $data, mixed $json, ?array $headers, string|CookieJarInterface|null $cookie, ?array $server, ?array $params, string|int|null $key): Promise
     {
-        [$ch, $buffer] = $this->makeHandle($method, $url, $data, $json, $headers, $cookie, $server);
-        return new Promise($ch, $buffer, $url, $this, $key ?? $url);
+        $factory = fn(): array => $this->makeHandle($method, $url, $data, $json, $headers, $cookie, $server, $params);
+        return new Promise($factory, $this->applyParams($url, $params), $this, $key ?? $url);
     }
 
     /**
@@ -608,17 +727,27 @@ class Pulsar extends Helper
             while ($done = curl_multi_info_read($mh)) {
                 $handle  = $done['handle'];
                 $promise = $byHandle[(int)$handle] ?? null;
+                curl_multi_remove_handle($mh, $handle);
 
-                if ($promise !== null) {
-                    $body     = curl_multi_getcontent($handle);
-                    $info     = curl_getinfo($handle);
-                    $response = $this->buildResponse($handle, $promise->buffer, $body, $info, $promise->url);
-                    $promise->resolve($response);
-                    $results[$promise->key] = $response;
-                    unset($byHandle[(int)$handle]);
+                if ($promise === null) {
+                    continue;
+                }
+                unset($byHandle[(int)$handle]);
+
+                $body     = curl_multi_getcontent($handle);
+                $info     = curl_getinfo($handle);
+                $response = $this->buildResponse($handle, $promise->buffer, $body, $info, $promise->url);
+
+                // Retry in place (no backoff sleep — it would stall the whole pool).
+                if ($this->shouldRetry($response, $promise->attempts)) {
+                    $promise->rebuild();
+                    curl_multi_add_handle($mh, $promise->handle);
+                    $byHandle[(int)$promise->handle] = $promise;
+                    continue;
                 }
 
-                curl_multi_remove_handle($mh, $handle);
+                $promise->resolve($response);
+                $results[$promise->key] = $response;
                 $add(); // refill the window
             }
 

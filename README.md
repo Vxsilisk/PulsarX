@@ -19,7 +19,7 @@ In-memory session cookies · browser impersonation · async parallel requests ·
 
 <br>
 
-[**Why PulsarX**](#-why-pulsarx) · [**Install**](#-installation) · [**Quick start**](#-quick-start) · [**Sessions**](#-sessions--cookies) · [**Impersonate**](#-impersonation) · [**Anti-detection**](#-anti-detection) · [**Async**](#-async-parallel) · [**Uploads**](#-multipart--file-uploads) · [**API**](#-api-reference)
+[**Why PulsarX**](#-why-pulsarx) · [**Install**](#-installation) · [**Quick start**](#-quick-start) · [**Sessions**](#-sessions--cookies) · [**Impersonate**](#-impersonation) · [**Anti-detection**](#-anti-detection) · [**Retries**](#-retries-params--redirects) · [**Async**](#-async-parallel) · [**Uploads**](#-multipart--file-uploads) · [**API**](#-api-reference)
 
 </div>
 
@@ -282,6 +282,50 @@ $s->post($url, json: ['id' => 1, 'tags' => ['a', 'b']]);  // sets Content-Type: 
 
 ---
 
+## ↻ Retries, params & redirects
+
+**Retries with backoff** — resilient against transient network errors and `429`/`5xx`:
+
+```php
+$s = (new Pulsar())->retries(3, baseDelay: 0.5);     // 3 tries, exponential backoff + jitter
+$s->retries(5, 0.5, on: [429, 503]);                  // customise which statuses retry
+```
+
+**Query params** — built and appended for you:
+
+```php
+$s->get('https://api.com/search', params: ['q' => 'x y', 'page' => 2]);
+// -> https://api.com/search?q=x+y&page=2
+```
+
+**Per-request timeout** and **redirect control**:
+
+```php
+$s->get($url, timeout: 5);              // override the default 60s for this call
+$s->redirects(follow: true, max: 10);   // session-wide redirect policy
+$r = $s->get($url);
+$r->getUrl();             // final URL after redirects
+$r->getRedirectCount();   // how many hops
+```
+
+**Throw on error** — opt into exceptions instead of checking `ok()` (sync requests):
+
+```php
+$s->throwOnError();
+try {
+    $s->get('https://api.com/missing');   // 404 -> throws
+} catch (PulsarException $e) { /* ... */ }
+```
+
+> [!IMPORTANT]
+> **TLS verification is ON by default** (secure). Disable it explicitly when a target
+> has a broken/self-signed certificate:
+> ```php
+> $s = new Pulsar(verify: false);
+> ```
+
+---
+
 ## ⇄ Proxy
 
 ```php
@@ -311,12 +355,23 @@ $s = new Pulsar([
 
 **HTTP methods** — every method returns a `Response`.
 
+All methods accept `params:` (query array) and `timeout:` (seconds).
+
 | Sync | Async (returns `Promise`) |
 |------|---------------------------|
-| `get($url, $headers?, $cookie?, $server?)` | `getAsync(..., $key?)` |
-| `post($url, $data?, $headers?, $cookie?, $server?, $json?)` | `postAsync(..., $json?, $key?)` |
-| `put` / `patch` / `delete($url, $data?, …, $json?)` | `requestAsync($method, $url, $data?, …, $json?, $key?)` |
-| `custom($url, $method, $data?, …, $json?)` | `pool(array $promises, int $concurrency = 10): Response[]` |
+| `get($url, $headers?, $cookie?, $server?, $params?, $timeout?)` | `getAsync(..., $params?, $key?)` |
+| `post($url, $data?, $headers?, $cookie?, $server?, $json?, $params?, $timeout?)` | `postAsync(..., $json?, $params?, $key?)` |
+| `put` / `patch` / `delete($url, $data?, …)` | `requestAsync($method, $url, …, $key?)` |
+| `custom($url, $method, $data?, …)` | `pool(array $promises, int $concurrency = 10): Response[]` |
+
+**Session policy** (chainable)
+
+| Method | Effect |
+|--------|--------|
+| `retries($times = 3, $baseDelay = 0.5, $on = null)` | retry transport errors + given statuses with backoff |
+| `redirects($follow = true, $max = 20)` | redirect-following policy |
+| `throwOnError($on = true)` | throw `PulsarException` on 4xx/5xx (sync) |
+| `new Pulsar($config = [], verify: true)` | TLS verification (on by default) |
 
 **Impersonation**
 
@@ -340,6 +395,8 @@ $s = new Pulsar([
 | `getHeaders()` | request + response headers |
 | `getReason()` | error message, if any |
 | `getElapsed()` | transfer time in seconds |
+| `getUrl()` | final URL after redirects |
+| `getRedirectCount()` | number of redirects followed |
 
 ---
 

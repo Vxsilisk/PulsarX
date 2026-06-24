@@ -9,12 +9,14 @@
 class Response
 {
     public function __construct(
-        private readonly bool  $success = false,
-        private readonly int   $status_code = 200,
-        private readonly array $headers = [],
-        private                $body = null,
-        private                $reason = null,
-        private readonly float $elapsed = 0.0,
+        private readonly bool   $success = false,
+        private readonly int    $status_code = 200,
+        private readonly array  $headers = [],
+        private                 $body = null,
+        private                 $reason = null,
+        private readonly float  $elapsed = 0.0,
+        private readonly string $url = '',
+        private readonly int    $redirects = 0,
     ) {}
 
     public function isSuccess(): bool
@@ -32,6 +34,18 @@ class Response
     public function getElapsed(): float
     {
         return $this->elapsed;
+    }
+
+    /** Final URL after any redirects. */
+    public function getUrl(): string
+    {
+        return $this->url;
+    }
+
+    /** Number of redirects followed. */
+    public function getRedirectCount(): int
+    {
+        return $this->redirects;
     }
 
     public function getStatusCode(): int
