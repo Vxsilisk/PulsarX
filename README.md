@@ -1,12 +1,12 @@
 <div align="center">
 
-# ⚡ PulsarX
+# ✦ PulsarX
 
 ### A `requests`-style HTTP client for PHP, built on cURL
 
 In-memory session cookies · browser impersonation · async parallel requests · multipart uploads
 
-<br>
+⋆ ˚ ｡ ⋆ ୨ ⋆ ˚ ｡ ⋆
 
 [![PHP](https://img.shields.io/badge/PHP-%E2%89%A5%208.1-777BB4?logo=php&logoColor=white)](https://www.php.net/)
 [![License](https://img.shields.io/badge/license-MIT-22c55e)](LICENSE)
@@ -22,20 +22,20 @@ In-memory session cookies · browser impersonation · async parallel requests ·
 
 ---
 
-## ✨ Features
+## ✦ Features
 
 |   | Feature | What it does |
 |---|---------|--------------|
-| 🍪 | **Session model** | Cookies persist in memory across requests, scoped by domain / path / expiry — like `requests.Session`. No files touch disk. |
-| 🎭 | **Impersonation** | 32 version-pinned browser fingerprints (Chrome, Edge, Firefox, Safari — desktop, Android & iOS). |
-| ⚡ | **Async** | Parallel requests over `curl_multi` with a rolling concurrency window and near-zero idle CPU. |
-| 📎 | **Multipart** | `multipart/form-data` and file uploads via a fluent `Mime` builder (on-disk or in-memory). |
-| 🧱 | **JSON-first** | `json:` body param, plus `Response::json()`, `ok()` and `getElapsed()`. |
-| 🪶 | **Zero deps** | One class per file, a tiny autoloader, and optional Composer. Just PHP + ext-curl. |
+| ❍ | **Session model** | Cookies persist in memory across requests, scoped by domain / path / expiry — like `requests.Session`. No files touch disk. |
+| ◈ | **Impersonation** | 32 version-pinned browser fingerprints (Chrome, Edge, Firefox, Safari — desktop, Android & iOS). |
+| ⟡ | **Async** | Parallel requests over `curl_multi` with a rolling concurrency window and near-zero idle CPU. |
+| ❖ | **Multipart** | `multipart/form-data` and file uploads via a fluent `Mime` builder (on-disk or in-memory). |
+| ⌗ | **JSON-first** | `json:` body param, plus `Response::json()`, `ok()` and `getElapsed()`. |
+| ⬡ | **Zero deps** | One class per file, a tiny autoloader, and optional Composer. Just PHP + ext-curl. |
 
 ---
 
-## 📦 Installation
+## ⬡ Installation
 
 **With Composer**
 
@@ -53,7 +53,7 @@ require __DIR__ . '/autoload.php';
 
 ---
 
-## 🚀 Quick start
+## ✷ Quick start
 
 ```php
 require __DIR__ . '/autoload.php';
@@ -70,7 +70,7 @@ $r->getElapsed();      // transfer time in seconds
 
 ---
 
-## 🍪 Sessions & cookies
+## ❍ Sessions & cookies
 
 A `Pulsar` instance **is** a session. Cookies set by the server are stored in memory
 and re-sent automatically on later requests — correctly scoped by **domain, path and
@@ -94,7 +94,7 @@ $s->get('https://site.com', cookie: $jar);
 
 ---
 
-## 🎭 Impersonation
+## ◈ Impersonation
 
 Mimic a real browser's fingerprint — User-Agent, the full header set **in browser
 order**, TLS cipher list, EC curves, HTTP/2 and Brotli/ZSTD. Chainable:
@@ -111,19 +111,19 @@ $s->impersonate('chrome')->get($url, headers: ['Referer: https://google.com']);
 ```
 
 <details>
-<summary><b>📋 All 32 targets</b> (or call <code>Pulsar::impersonateTargets()</code> at runtime)</summary>
+<summary><b>◇ All 32 targets</b> (or call <code>Pulsar::impersonateTargets()</code> at runtime)</summary>
 
 <br>
 
 | Browser | Targets |
 |---------|---------|
-| 🟢 **Chrome** (desktop) | `chrome99` `chrome110` `chrome116` `chrome119` `chrome120` `chrome124` `chrome131` `chrome133` `chrome136` `chrome142` `chrome146` `chrome` |
-| 📱 **Chrome** (Android) | `chrome99_android` `chrome131_android` `chrome_android` |
-| 🔵 **Edge** | `edge99` `edge101` `edge131` `edge` |
-| 🦊 **Firefox** | `firefox133` `firefox135` `firefox144` `firefox` |
-| 🧭 **Safari** (macOS) | `safari153` `safari170` `safari180` `safari260` `safari` |
-| 🍏 **Safari** (iOS) | `safari172_ios` `safari180_ios` `safari_ios` |
-| 🧅 **Tor** | `tor` |
+| ❯ **Chrome** (desktop) | `chrome99` `chrome110` `chrome116` `chrome119` `chrome120` `chrome124` `chrome131` `chrome133` `chrome136` `chrome142` `chrome146` `chrome` |
+| ❯ **Chrome** (Android) | `chrome99_android` `chrome131_android` `chrome_android` |
+| ❯ **Edge** | `edge99` `edge101` `edge131` `edge` |
+| ❯ **Firefox** | `firefox133` `firefox135` `firefox144` `firefox` |
+| ❯ **Safari** (macOS) | `safari153` `safari170` `safari180` `safari260` `safari` |
+| ❯ **Safari** (iOS) | `safari172_ios` `safari180_ios` `safari_ios` |
+| ❯ **Tor** | `tor` |
 
 > Bare names like `chrome`, `safari`, `firefox` are aliases for the latest stable build.
 
@@ -145,7 +145,7 @@ $s->impersonate('safari172_ios');       // iOS Safari
 
 ---
 
-## ⚡ Async (parallel)
+## ⟡ Async (parallel)
 
 Build promises with `getAsync()` / `postAsync()` / `requestAsync()`, then resolve a
 batch with `pool()`. It uses `curl_multi` with a **rolling concurrency window** and
@@ -174,7 +174,7 @@ $s->pool($promises);
 
 ---
 
-## 📎 Multipart & file uploads
+## ❖ Multipart & file uploads
 
 A fluent `multipart/form-data` builder — PulsarX's take on `curl_cffi`'s `CurlMime`:
 
@@ -198,7 +198,7 @@ $mime = Mime::fromList([
 
 ---
 
-## 🧱 JSON body
+## ⌗ JSON body
 
 ```php
 $s->post($url, json: ['id' => 1, 'tags' => ['a', 'b']]);  // sets Content-Type: application/json
@@ -209,7 +209,7 @@ $s->post($url, json: ['id' => 1, 'tags' => ['a', 'b']]);  // sets Content-Type: 
 
 ---
 
-## 🔀 Proxy
+## ⇄ Proxy
 
 ```php
 // HTTP tunnel
@@ -221,7 +221,7 @@ $s->get($url, server: ['method' => 'custom', 'server' => 'http://1.2.3.4:8080', 
 
 ---
 
-## ⚙️ Constructor options
+## ◇ Constructor options
 
 Override any cURL default by passing options to the constructor:
 
@@ -234,7 +234,7 @@ $s = new Pulsar([
 
 ---
 
-## 📖 API reference
+## ❯ API reference
 
 **HTTP methods** — every method returns a `Response`.
 
@@ -268,7 +268,7 @@ $s = new Pulsar([
 
 ---
 
-## 🗂️ Project layout
+## ❏ Project layout
 
 ```
 PulsarX/
@@ -288,11 +288,13 @@ PulsarX/
     └── PulsarException.php
 ```
 
-> 💡 Run `php example.php` to see sessions, impersonation, multipart, JSON and async in action.
+> Run `php example.php` to see sessions, impersonation, multipart, JSON and async in action.
 
 ---
 
 <div align="center">
+
+⋆ ˚ ｡ ⋆ ୨ ⋆ ˚ ｡ ⋆
 
 **PulsarX** — made by [**Vxsilisk**](https://github.com/Vxsilisk) · [MIT License](LICENSE)
 
