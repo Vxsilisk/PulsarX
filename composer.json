@@ -1,8 +1,13 @@
 {
     "name": "vxsilisk/pulsarx",
-    "description": "A requests-style HTTP client for PHP, built on cURL: in-memory session cookies, browser impersonation, async parallel requests and multipart uploads.",
+    "description": "Browser-impersonating HTTP client for PHP — like curl_cffi/requests, but native. 32 TLS fingerprints, Sec-Fetch/Referer stealth, async (curl_multi), session cookies & multipart. Zero dependencies.",
     "type": "library",
-    "keywords": ["http", "curl", "client", "requests", "impersonate", "tls-fingerprint", "ja3", "async", "scraping"],
+    "keywords": [
+        "http", "http-client", "curl", "client", "requests", "async", "curl-multi",
+        "scraping", "web-scraping", "anti-bot", "anti-detection", "cloudflare",
+        "impersonate", "browser-impersonation", "curl-impersonate",
+        "tls-fingerprint", "ja3", "ja4", "user-agent"
+    ],
     "homepage": "https://github.com/Vxsilisk/PulsarX",
     "license": "MIT",
     "authors": [

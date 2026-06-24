@@ -4,6 +4,9 @@
 
 ### A `requests`-style HTTP client for PHP, built on cURL
 
+**The browser-impersonating HTTP client PHP was missing.**
+Guzzle sends requests — PulsarX sends requests that look like Chrome.
+
 In-memory session cookies · browser impersonation · async parallel requests · multipart uploads
 
 ⋆ ˚ ｡ ⋆ ୨ ⋆ ˚ ｡ ⋆
@@ -16,7 +19,7 @@ In-memory session cookies · browser impersonation · async parallel requests ·
 
 <br>
 
-[**Install**](#-installation) · [**Quick start**](#-quick-start) · [**Sessions**](#-sessions--cookies) · [**Impersonate**](#-impersonation) · [**Anti-detection**](#-anti-detection) · [**Async**](#-async-parallel) · [**Uploads**](#-multipart--file-uploads) · [**API**](#-api-reference)
+[**Why PulsarX**](#-why-pulsarx) · [**Install**](#-installation) · [**Quick start**](#-quick-start) · [**Sessions**](#-sessions--cookies) · [**Impersonate**](#-impersonation) · [**Anti-detection**](#-anti-detection) · [**Async**](#-async-parallel) · [**Uploads**](#-multipart--file-uploads) · [**API**](#-api-reference)
 
 </div>
 
@@ -33,6 +36,28 @@ In-memory session cookies · browser impersonation · async parallel requests ·
 | ❖ | **Multipart** | `multipart/form-data` and file uploads via a fluent `Mime` builder (on-disk or in-memory). |
 | ⌗ | **JSON-first** | `json:` body param, plus `Response::json()`, `ok()` and `getElapsed()`. |
 | ⬡ | **Zero deps** | One class per file, a tiny autoloader, and optional Composer. Just PHP + ext-curl. |
+
+---
+
+## ✦ Why PulsarX?
+
+PHP has great HTTP clients — but **none of them can look like a browser**. That's the gap
+PulsarX fills: it's the PHP answer to Python's `curl_cffi`.
+
+| | **PulsarX** | Guzzle | Symfony HttpClient | curl_cffi *(Python)* |
+|---|:---:|:---:|:---:|:---:|
+| Language | **PHP** | PHP | PHP | Python |
+| Browser impersonation | **✓ 32 targets** | ✗ | ✗ | ✓ |
+| Anti-detection (`Sec-Fetch` / `Referer`) | **✓** | ✗ | ✗ | partial |
+| Fingerprint rotation | **✓** | ✗ | ✗ | ✓ |
+| Async / parallel | **✓** `curl_multi` | ✓ | ✓ | ✓ |
+| Scoped session cookies | **✓** | ✓ | ✓ | ✓ |
+| Multipart / file uploads | **✓** | ✓ | ✓ | ✓ |
+| Runtime dependencies | **none** | several | none | C / curl-impersonate |
+
+> On stock OpenSSL the TLS layer is *approximate*, not a byte-exact JA3 — see
+> [Anti-detection](#-anti-detection). For an exact fingerprint, run PHP against a
+> `curl-impersonate` libcurl (auto-detected).
 
 ---
 
