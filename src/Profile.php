@@ -104,6 +104,29 @@ class Profile
         return array_keys(self::targets());
     }
 
+    /**
+     * A realistic spread of current desktop/mobile browsers for rotation.
+     * Only complete, coherent targets — rotating between *whole* profiles keeps
+     * UA / sec-ch-ua / TLS in sync, unlike randomising fields within one profile.
+     *
+     * @return string[]
+     */
+    public static function realisticPool(): array
+    {
+        return [
+            'chrome131', 'chrome133', 'chrome136', 'chrome142', 'chrome146',
+            'edge131', 'firefox144', 'firefox135',
+            'safari180', 'safari260', 'safari180_ios', 'chrome131_android',
+        ];
+    }
+
+    /** Pick a random complete profile from $pool (defaults to realisticPool()). */
+    public static function random(?array $pool = null): self
+    {
+        $pool = $pool ?: self::realisticPool();
+        return self::resolve($pool[array_rand($pool)]);
+    }
+
     public static function resolve(string $name): self
     {
         $name    = strtolower($name);

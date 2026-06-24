@@ -35,11 +35,16 @@ class Pulsar extends Helper
     private string $userAgent = 'PulsarX/1.0 (+https://github.com/Vxsilisk/PulsarX) requests-style cURL client';
     private ?Profile $profile = null;
 
+    /** @var string[] rotation pool; non-empty enables per-request rotation */
+    private array $rotatePool = [];
+    private bool $stealth = false;
+
     private int $error_code = 0;
     private string $error_string = '';
 
     private bool|string $body = false;
     private string $currentUrl = '';
+    private string $lastUrl = '';
 
     public function __construct(array $config = [])
     {
@@ -54,17 +59,50 @@ class Pulsar extends Helper
     /**
      * Mimic a browser fingerprint. Chainable: $s->impersonate('chrome')->get($url).
      *
-     * @param string|Profile $browser a target name (see impersonateTargets()) or a Profile
+     * Pass 'random' to pick one coherent profile for the whole session.
+     *
+     * @param string|Profile $browser a target name (see impersonateTargets()), 'random', or a Profile
      */
     public function impersonate(string|Profile $browser): static
     {
-        $this->profile = $browser instanceof Profile ? $browser : Profile::resolve($browser);
+        if ($browser === 'random') {
+            $this->profile = Profile::random();
+        } else {
+            $this->profile = $browser instanceof Profile ? $browser : Profile::resolve($browser);
+        }
+        $this->rotatePool = [];
+        return $this;
+    }
+
+    /**
+     * Rotate a fresh, coherent browser profile on *every* request — real traffic is a
+     * mix of browsers, so a single static fingerprint is itself a tell.
+     *
+     * @param string[]|null $targets pool of target names (defaults to Profile::realisticPool())
+     */
+    public function rotate(?array $targets = null): static
+    {
+        $this->rotatePool = $targets ?: Profile::realisticPool();
+        $this->profile = null;
+        return $this;
+    }
+
+    /**
+     * Enable behavioural coherence: a real browser computes Sec-Fetch-Site
+     * (none / same-origin / same-site / cross-site) from where it came, and sends a
+     * Referer that honours Referrer-Policy (origin-only when cross-site). Naive
+     * scrapers send a fixed `Sec-Fetch-Site: none` with no Referer — an easy tell.
+     */
+    public function stealth(bool $on = true): static
+    {
+        $this->stealth = $on;
         return $this;
     }
 
     public function clearImpersonation(): static
     {
         $this->profile = null;
+        $this->rotatePool = [];
         return $this;
     }
 
@@ -72,6 +110,15 @@ class Pulsar extends Helper
     public static function impersonateTargets(): array
     {
         return Profile::available();
+    }
+
+    /** Resolve the profile to use for the current request (fixed or rotated). */
+    private function effectiveProfile(): ?Profile
+    {
+        if ($this->rotatePool !== []) {
+            return Profile::random($this->rotatePool);
+        }
+        return $this->profile;
     }
 
     /* ----------------------------------------------------------------------
@@ -202,11 +249,18 @@ class Pulsar extends Helper
             }
         }
 
-        // Impersonation (profile) + user headers
-        $opt[CURLOPT_USERAGENT]  = $this->profile?->userAgent ?? $this->userAgent;
-        $opt[CURLOPT_HTTPHEADER] = $this->buildHeaderLines($headers);
-        if ($this->profile !== null) {
-            $opt += $this->profileOptions($this->profile);
+        // Impersonation (profile, possibly rotated) + user headers
+        $profile = $this->effectiveProfile();
+
+        // Behavioural coherence: realistic Sec-Fetch-Site + Referer chain
+        if ($this->stealth && $profile !== null) {
+            $headers = $this->applyStealthHeaders($headers, $profile, $url);
+        }
+
+        $opt[CURLOPT_USERAGENT]  = $profile?->userAgent ?? $this->userAgent;
+        $opt[CURLOPT_HTTPHEADER] = $this->buildHeaderLines($headers, $profile);
+        if ($profile !== null) {
+            $opt += $this->profileOptions($profile);
         }
 
         // Cookies scoped to this URL (session persistence)
@@ -239,14 +293,14 @@ class Pulsar extends Helper
      * @param array<int,string>|null $headers indexed "Name: value" strings
      * @return array<int,string>
      */
-    private function buildHeaderLines(?array $headers): array
+    private function buildHeaderLines(?array $headers, ?Profile $profile): array
     {
-        if ($this->profile === null) {
+        if ($profile === null) {
             return $headers ?? [];
         }
 
-        $merged = $this->profile->headers;          // name => value, ordered
-        $merged['User-Agent'] ??= $this->profile->userAgent;
+        $merged = $profile->headers;                 // name => value, ordered
+        $merged['User-Agent'] ??= $profile->userAgent;
 
         foreach ($headers ?? [] as $line) {
             if (!is_string($line) || !str_contains($line, ':')) {
@@ -298,6 +352,90 @@ class Pulsar extends Helper
         }
 
         return $opt;
+    }
+
+    /**
+     * Inject a realistic Sec-Fetch-Site + Referer derived from the previous request
+     * in this session. Values the caller set explicitly always win.
+     *
+     * @param array<int,string>|null $headers
+     * @return array<int,string>
+     */
+    private function applyStealthHeaders(?array $headers, Profile $profile, string $url): array
+    {
+        $extra = [];
+
+        // Only emit Sec-Fetch-Site for profiles that actually send the Sec-Fetch family.
+        foreach (array_keys($profile->headers) as $name) {
+            if (strcasecmp($name, 'Sec-Fetch-Site') === 0) {
+                $extra[] = 'Sec-Fetch-Site: ' . $this->secFetchSite($this->lastUrl, $url);
+                break;
+            }
+        }
+
+        $referer = $this->referer($this->lastUrl, $url);
+        if ($referer !== null) {
+            $extra[] = 'Referer: ' . $referer;
+        }
+
+        return $this->mergeHeaderList($headers, $extra);
+    }
+
+    /** Browser request-context: none | same-origin | same-site | cross-site. */
+    private function secFetchSite(string $from, string $to): string
+    {
+        if ($from === '') {
+            return 'none';
+        }
+
+        $a = parse_url($from);
+        $b = parse_url($to);
+
+        if ($this->origin($a) === $this->origin($b)) {
+            return 'same-origin';
+        }
+
+        if ($this->registrableDomain($a['host'] ?? '') === $this->registrableDomain($b['host'] ?? '')) {
+            return 'same-site';
+        }
+
+        return 'cross-site';
+    }
+
+    /**
+     * Referer honouring the default strict-origin-when-cross-origin policy:
+     * full URL within the same site, origin-only across sites, none on first hit.
+     */
+    private function referer(string $from, string $to): ?string
+    {
+        if ($from === '') {
+            return null;
+        }
+
+        if ($this->secFetchSite($from, $to) === 'cross-site') {
+            return $this->origin(parse_url($from)) . '/';
+        }
+
+        return $from;
+    }
+
+    private function origin(array|false $parts): string
+    {
+        if (!is_array($parts)) {
+            return '';
+        }
+        $scheme = $parts['scheme'] ?? 'https';
+        $host   = $parts['host'] ?? '';
+        $port   = isset($parts['port']) ? ':' . $parts['port'] : '';
+
+        return "{$scheme}://{$host}{$port}";
+    }
+
+    /** Approximate eTLD+1 (last two labels). Good enough for Sec-Fetch heuristics. */
+    private function registrableDomain(string $host): string
+    {
+        $parts = explode('.', strtolower($host));
+        return count($parts) <= 2 ? $host : implode('.', array_slice($parts, -2));
     }
 
     private function proxyOptions(array $args): array
@@ -374,6 +512,9 @@ class Pulsar extends Helper
         $url  = $url !== '' ? $url : ($info['url'] ?? $this->currentUrl);
         $host = (string)parse_url($url, PHP_URL_HOST);
         $this->cookieJar->ingestResponseHeaders($buffer->rawResponseHeaders, $host);
+
+        // Remember where we ended up (after redirects) for the next request's Referer chain.
+        $this->lastUrl = $info['url'] ?? $url;
 
         $headers = [
             'request'  => array_key_exists('request_header', $info) ? $this->parseHeadersHandle($info['request_header']) : [],

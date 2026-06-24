@@ -16,7 +16,7 @@ In-memory session cookies · browser impersonation · async parallel requests ·
 
 <br>
 
-[**Install**](#-installation) · [**Quick start**](#-quick-start) · [**Sessions**](#-sessions--cookies) · [**Impersonate**](#-impersonation) · [**Async**](#-async-parallel) · [**Uploads**](#-multipart--file-uploads) · [**API**](#-api-reference)
+[**Install**](#-installation) · [**Quick start**](#-quick-start) · [**Sessions**](#-sessions--cookies) · [**Impersonate**](#-impersonation) · [**Anti-detection**](#-anti-detection) · [**Async**](#-async-parallel) · [**Uploads**](#-multipart--file-uploads) · [**API**](#-api-reference)
 
 </div>
 
@@ -28,6 +28,7 @@ In-memory session cookies · browser impersonation · async parallel requests ·
 |---|---------|--------------|
 | ❍ | **Session model** | Cookies persist in memory across requests, scoped by domain / path / expiry — like `requests.Session`. No files touch disk. |
 | ◈ | **Impersonation** | 32 version-pinned browser fingerprints (Chrome, Edge, Firefox, Safari — desktop, Android & iOS). |
+| ✸ | **Anti-detection** | Coherent `Sec-Fetch-Site` + `Referer` chains (`stealth()`) and whole-profile rotation (`rotate()`). |
 | ⟡ | **Async** | Parallel requests over `curl_multi` with a rolling concurrency window and near-zero idle CPU. |
 | ❖ | **Multipart** | `multipart/form-data` and file uploads via a fluent `Mime` builder (on-disk or in-memory). |
 | ⌗ | **JSON-first** | `json:` body param, plus `Response::json()`, `ok()` and `getElapsed()`. |
@@ -145,6 +146,53 @@ $s->impersonate('safari172_ios');       // iOS Safari
 
 ---
 
+## ✸ Anti-detection
+
+Bot detection checks **coherence across layers** — it catches you when something doesn't
+line up. PulsarX gives you two tools beyond raw impersonation, both fully working on stock
+OpenSSL.
+
+### Behavioural coherence — `stealth()`
+
+A naive client always sends `Sec-Fetch-Site: none` with no `Referer`. A real browser
+derives both from where it navigated *from*. Enable `stealth()` and PulsarX maintains that
+context across the session automatically:
+
+```php
+$s = (new Pulsar())->impersonate('chrome131')->stealth();
+
+$s->get('https://shop.com/');           // Sec-Fetch-Site: none      (direct, no Referer)
+$s->get('https://shop.com/cart');       // Sec-Fetch-Site: same-origin · Referer: https://shop.com/
+$s->get('https://api.shop.com/data');   // Sec-Fetch-Site: same-site · Referer: https://shop.com/cart
+$s->get('https://other.com/');          // Sec-Fetch-Site: cross-site · Referer: https://api.shop.com/  (origin only)
+```
+
+The `Referer` honours the default **strict-origin-when-cross-origin** policy — full URL
+within a site, origin-only across sites. Anything you set by hand always wins.
+
+### Fingerprint rotation — `rotate()`
+
+Since Chrome 110, browsers randomise TLS extension order — so a **single static
+fingerprint is itself suspicious**. Rotation picks a fresh, *coherent* profile (UA +
+sec-ch-ua + TLS all in sync) on every request:
+
+```php
+$s = (new Pulsar())->rotate();              // realistic pool of current browsers
+$s = (new Pulsar())->rotate(['chrome146', 'firefox144', 'safari260']);  // your own pool
+$s = (new Pulsar())->impersonate('random'); // one random profile, fixed for the session
+```
+
+> [!IMPORTANT]
+> Rotation varies **whole profiles**, never fields within one. Randomising the
+> `sec-ch-ua` brand order or mixing a Chrome UA with a Firefox header set is a *mismatch
+> signal* that makes you easier to flag, not harder — so PulsarX never does it.
+>
+> None of this forges a byte-exact JA3/JA4 on OpenSSL, and no HTTP client clears
+> JavaScript challenges (Cloudflare Turnstile et al.). For hardened anti-bots you still
+> need a `curl-impersonate` libcurl or a headless browser.
+
+---
+
 ## ⟡ Async (parallel)
 
 Build promises with `getAsync()` / `postAsync()` / `requestAsync()`, then resolve a
@@ -249,7 +297,9 @@ $s = new Pulsar([
 
 | Method | Returns |
 |--------|---------|
-| `impersonate(string\|Profile $target)` | `$this` (chainable) |
+| `impersonate(string\|Profile $target)` | `$this` — fixed profile (`'random'` picks one) |
+| `rotate(?array $targets = null)` | `$this` — fresh coherent profile per request |
+| `stealth(bool $on = true)` | `$this` — auto `Sec-Fetch-Site` + `Referer` chain |
 | `clearImpersonation()` | `$this` |
 | `Pulsar::impersonateTargets()` | `string[]` of every target |
 
